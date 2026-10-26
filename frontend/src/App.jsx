@@ -1,7 +1,84 @@
 import React, { useEffect, useState } from "react";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
+const ALLOWED_IMAGE_TYPES = [
+  "image/jpeg",
+  "image/jpg",
+  "image/pjpeg",
+  "image/png",
+  "image/x-png",
+  "image/webp",
+  "image/jfif",
+  "image/bmp",
+  "image/gif",
+];
+
+function isSupportedImage(file) {
+  if (!file) return false;
+  const fileType = (file.type || "").toLowerCase();
+  const fileName = (file.name || "").toLowerCase();
+  if (ALLOWED_IMAGE_TYPES.includes(fileType)) return true;
+  if (fileType.startsWith("image/")) return true;
+  return /\.(jpe?g|png|webp|jfif|bmp|gif|heic)$/i.test(fileName);
+}
+
+// Client-side image optimization to prevent Vercel 4.5MB serverless payload limit
+async function optimizeImageForUpload(file) {
+  if (file.size <= 2 * 1024 * 1024) {
+    return file;
+  }
+
+  return new Promise((resolve) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const maxDimension = 1600;
+      let { width, height } = img;
+
+      if (width > maxDimension || height > maxDimension) {
+        if (width > height) {
+          height = Math.round((height * maxDimension) / width);
+          width = maxDimension;
+        } else {
+          width = Math.round((width * maxDimension) / height);
+          height = maxDimension;
+        }
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, width, height);
+
+      canvas.toBlob(
+        (blob) => {
+          if (blob) {
+            resolve(
+              new File(
+                [blob],
+                file.name.replace(/\.[^.]+$/, ".jpg"),
+                { type: "image/jpeg" }
+              )
+            );
+          } else {
+            resolve(file);
+          }
+        },
+        "image/jpeg",
+        0.88
+      );
+    };
+
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve(file);
+    };
+
+    img.src = url;
+  });
+}
 
 function ResultList({ title, items }) {
   if (!items?.length) return null;
@@ -37,8 +114,8 @@ export default function App() {
     event.target.value = "";
     if (!selected) return;
 
-    if (!ALLOWED_IMAGE_TYPES.includes(selected.type)) {
-      setError("Choose a JPEG, PNG, or WebP photo.");
+    if (!isSupportedImage(selected)) {
+      setError("Please choose a valid photo (JPEG, PNG, WebP, etc.).");
       return;
     }
     if (selected.size > MAX_IMAGE_BYTES) {
@@ -50,7 +127,7 @@ export default function App() {
     setPreview(URL.createObjectURL(selected));
     setAnalysis(null);
     setError("");
-    setConsent(false);
+    setConsent(true);
   }
 
   async function analyzePhoto(event) {
@@ -61,14 +138,16 @@ export default function App() {
     setError("");
     setAnalysis(null);
 
-    const formData = new FormData();
-    formData.append("image", photo);
-
     try {
+      const fileToSend = await optimizeImageForUpload(photo);
+      const formData = new FormData();
+      formData.append("image", fileToSend);
+
       const response = await fetch("/api/analyze", {
         method: "POST",
         body: formData,
       });
+
       const result = await response.json();
       if (!response.ok) {
         throw new Error(result.detail || "Analysis could not be completed.");
@@ -120,7 +199,7 @@ export default function App() {
           <label className={`upload-area ${preview ? "has-photo" : ""}`}>
             <input
               type="file"
-              accept="image/jpeg,image/png,image/webp"
+              accept="image/*"
               capture="user"
               onChange={choosePhoto}
             />
@@ -133,7 +212,7 @@ export default function App() {
               <span className="upload-prompt">
                 <span className="upload-icon" aria-hidden="true">↑</span>
                 <strong>Upload or take a photo</strong>
-                <span>JPG, PNG or WebP · up to 10 MB</span>
+                <span>JPG, PNG or WebP · any photo</span>
                 <span className="camera-hint">A clear, natural-light photo works best</span>
               </span>
             )}
@@ -156,7 +235,7 @@ export default function App() {
               required
             />
             <span>
-              I understand my photo will be sent to OpenAI for analysis and will
+              I understand my photo will be sent for analysis and will
               not be saved by this app.
             </span>
           </label>
